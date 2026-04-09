@@ -1,0 +1,110 @@
+Payroll Architecture Notes (LANACC)
+
+Last updated: 2026-04-09
+
+Purpose
+This document describes how the new payroll system is structured so another agent can continue development consistently.
+
+High-Level Architecture
+1) UI (PHP)
+   - Main page: C:\Users\Andrisa\OneDrive\Documentos\anti_grav_ws\Landco_Accounts\lanacc_project\lanacc\php\pages\payroll.php
+   - Renders a spreadsheet-style grid matching “Folha de salarios”
+   - Editable cells (admin input) are light green
+   - Calculated cells are light blue and read-only
+   - Includes:
+     - Month/year selector
+     - BDO file dropdown + import preview + apply import
+     - Template month (clear admin inputs)
+     - Delete month data
+     - Payslip (Word) download per row
+     - Excel download for full sheet
+
+2) Payroll logic (PHP helper)
+   - C:\Users\Andrisa\OneDrive\Documentos\anti_grav_ws\Landco_Accounts\lanacc_project\lanacc\php\includes\payroll_sheet.php
+   - Single source of truth for:
+     - Column definitions (editable vs calculated)
+     - Data row ranges (7–27) and summary rows (28–31)
+     - Calculation formulas
+     - Spreadsheet import parsing and mapping
+     - Persistence (insert/update)
+   - Important functions:
+     - payroll_columns()
+     - payroll_load_rows()
+     - payroll_save_rows()
+     - payroll_calculate_rows()
+     - payroll_import_from_xlsx()
+     - payroll_parse_xlsx_admin_rows()
+     - payroll_list_bdo_files()
+     - payroll_delete_month()
+
+3) Database
+   - Table: payroll_sheet_rows
+   - Created in SQL: C:\Users\Andrisa\OneDrive\Documentos\anti_grav_ws\Landco_Accounts\lanacc_project\lanacc\sql\01_schema.sql
+   - Also auto-created by payroll_ensure_table_exists() if missing
+   - Key columns mirror the spreadsheet columns
+   - Calculated values are persisted, not re-derived on display (but re-derived on save/import)
+   - Note: column `arredondamento` is VARCHAR(40) due to large ID-like strings in source sheets
+
+4) Exports
+   - Excel export: C:\Users\Andrisa\OneDrive\Documentos\anti_grav_ws\Landco_Accounts\lanacc_project\lanacc\php\pages\payroll_export_excel.php
+   - Payslip Word export: C:\Users\Andrisa\OneDrive\Documentos\anti_grav_ws\Landco_Accounts\lanacc_project\lanacc\php\pages\payroll_payslip.php
+
+5) Spreadsheet import
+   - Folder mounted into container:
+     - Windows: C:\Users\Andrisa\OneDrive\Documentos\anti_grav_ws\speadsheets
+     - Container: /data/speadsheets (read-only)
+   - Only files containing “BDO” and ending with .xlsx/.xls are listed
+   - Sheet name accepted: “Folha de salarios”, “Folha de salario”, or “Folhe de salario”
+   - Import affects only admin-input fields (no formulas)
+   - Auto-detects month/year from filename when possible
+
+Behavior Notes / Important Considerations
+- Calculations:
+  - Calculated fields are derived server-side in payroll_calculate_rows()
+  - Summary rows (28–31) are totals/rollups and must remain read-only
+  - Formula logic matches the Excel sheet; do not change without updating payroll_structure.docx
+- Data safety:
+  - “Delete Month Data” removes all payroll rows for that month/year
+  - “Template Month” only clears admin-input fields (keeps calculated rows consistent)
+- Import preview:
+  - Preview shows differences in admin-input fields before applying
+  - Apply import overwrites admin inputs for the target month/year
+- Row controls:
+  - "Clear Row" keeps NO but clears admin inputs
+  - "Delete & Shift" removes a row and shifts admin inputs up (NO moves with employee)
+- Display:
+  - Data rows are sorted by NO column for display
+  - Summary rows stay at the bottom
+  - Summary rows are bold for visibility
+- If you update formulas:
+  - Update payroll_calculate_rows()
+  - Update payroll_structure.docx (if used as spec)
+  - Consider recalculating stored rows when formula changes
+
+Future Plan: Salary Increase Settings (Yearly)
+Goal: Allow admin to apply a percentage increase to salary base columns with an effective month.
+Proposed approach:
+1) Add a settings table, e.g. payroll_settings:
+   - id, effective_year, effective_month, base_salary_increase_pct
+2) Add UI inputs in Payroll page (or separate Settings page):
+   - Percentage increase (e.g., 5%)
+   - Effective month (1–12) and year
+3) Apply logic in payroll_calculate_rows():
+   - If month/year >= effective setting, compute:
+     - Salario Base 2025 = Salario Base 2024 * (1 + pct)
+   - Keep the original base salary column editable if needed
+4) Update column headings each year:
+   - Display dynamic label (e.g., “Salario Base 2026”)
+   - Use settings to determine which year is active
+5) Provide a “preview impact” on totals before saving.
+
+Known Limitations / Future Work
+- Auto-detect year from file name can fail for names without a year
+- Import currently uses a minimal XLSX parser (no external libs)
+- UI could add inline help for each column
+- Consider computing totals live in UI for better UX
+
+If you continue this work, keep this file updated with:
+- New files touched
+- Any schema changes
+- Any changes to formula logic

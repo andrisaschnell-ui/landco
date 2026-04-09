@@ -1,0 +1,78 @@
+/* LANACC — style.css */
+
+body { background: #f4f6fb; min-height: 100vh; }
+
+.navbar-brand { letter-spacing: 0.08em; font-size: 1.3rem; }
+
+.card { border-radius: 10px; }
+.card-header { border-radius: 10px 10px 0 0 !important; border-bottom: 1px solid #e9ecef; }
+
+.table th { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.table td { font-size: 0.875rem; vertical-align: middle; }
+
+.btn-xs { padding: 0.1rem 0.35rem; font-size: 0.75rem; }
+
+code { background: #f0f4ff; color: #5863a8; padding: 1px 5px; border-radius: 4px; }
+
+.footer { font-size: 0.8rem; }
+
+/* Sidebar active state */
+.list-group-item.active { background: #0d6efd; border-color: #0d6efd; }
+
+/* Report print styles */
+@media print {
+  body { background: white; }
+  nav, .btn, form, .nav-tabs, footer, .navbar { display: none !important; }
+  .card { box-shadow: none !important; border: none !important; }
+  .container-fluid { padding: 0 !important; }
+  .report-body .card-body { padding: 0 !important; }
+  .table { font-size: 11pt; }
+  h5, h6 { color: #000 !important; }
+}
+
+/* Dashboard KPI hover */
+.card:hover { box-shadow: 0 4px 15px rgba(0,0,0,0.1); transition: box-shadow 0.2s; }
+
+/* Badge sizing */
+.badge { font-size: 0.72rem; }
+
+/* Sticky table header */
+.table-responsive thead.sticky-top th { background: #f8f9fa; }
+
+/* Payroll grid coloring */
+.payroll-grid .cell-editable { background: #c8f2c8; border: 1px solid #6dc66d; }
+.payroll-grid .cell-calculated { background: #cfe3ff; border: 1px solid #6aa3ff; }
+.payroll-grid td { min-width: 140px; }
+.payroll-grid .cell-editable input { background: #e9ffe9; }
+.payroll-grid .cell-calculated span { color: #1f2d5a; font-weight: 600; }
+.payroll-grid .cell-editable { box-shadow: inset 0 0 0 1px #3ea74a; }
+.payroll-grid .cell-calculated { box-shadow: inset 0 0 0 1px #2f6bd6; }
+.payroll-grid .name-cell { font-weight: 700; color: #0b3a2c; text-decoration: underline; }
+.payroll-grid .table-secondary td { font-weight: 700; }
+
+/* Floating zoom menu */
+.zoom-menu {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  background: #fff;
+  border: 1px solid #d0d7e2;
+  border-radius: 10px;
+  padding: 8px 10px;
+  z-index: 1055;
+}
+
+/* Status indicators */
+.status-dot {
+  display: inline-block; width: 8px; height: 8px;
+  border-radius: 50%; margin-right: 5px;
+}
+.status-dot.success { background: #198754; }
+.status-dot.warning { background: #ffc107; }
+.status-dot.danger  { background: #dc3545; }
+
+/* Sidebar nav */
+.list-group-item { font-size: 0.9rem; padding: 0.6rem 1rem; }
+
+/* Chart canvas height cap */
+canvas { max-height: 260px; }

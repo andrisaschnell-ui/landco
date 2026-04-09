@@ -1,0 +1,86 @@
+version: '3.8'
+
+services:
+
+  # ──────────────────────────────────────────────────────────────
+  #  MySQL 8 Database
+  # ──────────────────────────────────────────────────────────────
+  mysql:
+    image: mysql:8.0
+    container_name: lanacc_db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-lanacc_root_2026}
+      MYSQL_DATABASE:      ${MYSQL_DATABASE:-lanacc}
+      MYSQL_USER:          ${MYSQL_USER:-lanacc_user}
+      MYSQL_PASSWORD:      ${MYSQL_PASSWORD:-lanacc_pass_2026}
+    ports:
+      - "3306:3306"
+    volumes:
+      - lanacc_mysql_data:/var/lib/mysql
+      - ./sql:/docker-entrypoint-initdb.d:ro   # runs *.sql on first start
+    networks:
+      - lanacc_net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost",
+             "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-lanacc_root_2026}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ──────────────────────────────────────────────────────────────
+  #  PHP 8.2 / Apache Web App
+  # ──────────────────────────────────────────────────────────────
+  php:
+    build:
+      context: .
+      dockerfile: Dockerfile.php
+    container_name: lanacc_app
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      DB_HOST:     mysql
+      DB_PORT:     3306
+      DB_NAME:     ${MYSQL_DATABASE:-lanacc}
+      DB_USER:     ${MYSQL_USER:-lanacc_user}
+      DB_PASSWORD: ${MYSQL_PASSWORD:-lanacc_pass_2026}
+      APP_ENV:     production
+      APP_SECRET:  ${APP_SECRET:-changeme_secret_key_2026}
+    ports:
+      - "8080:80"
+    volumes:
+      - ./php:/var/www/html
+      - lanacc_uploads:/var/www/html/uploads
+      - C:/Users/Andrisa/OneDrive/Documentos/anti_grav_ws/speadsheets:/data/speadsheets:ro
+    networks:
+      - lanacc_net
+
+  # ──────────────────────────────────────────────────────────────
+  #  phpMyAdmin  (database admin UI — http://localhost:8081)
+  # ──────────────────────────────────────────────────────────────
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin:latest
+    container_name: lanacc_pma
+    restart: unless-stopped
+    depends_on:
+      - mysql
+    environment:
+      PMA_HOST:     mysql
+      PMA_PORT:     3306
+      PMA_USER:     root
+      PMA_PASSWORD: ${MYSQL_ROOT_PASSWORD:-lanacc_root_2026}
+      UPLOAD_LIMIT: 64M
+    ports:
+      - "8081:80"
+    networks:
+      - lanacc_net
+
+volumes:
+  lanacc_mysql_data:
+  lanacc_uploads:
+
+networks:
+  lanacc_net:
+    driver: bridge
