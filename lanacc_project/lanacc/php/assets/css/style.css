@@ -6,6 +6,7 @@ body { background: #f4f6fb; min-height: 100vh; }
 
 .card { border-radius: 10px; }
 .card-header { border-radius: 10px 10px 0 0 !important; border-bottom: 1px solid #e9ecef; }
+.card-header.clickable { cursor: pointer; }
 
 .table th { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; }
 .table td { font-size: 0.875rem; vertical-align: middle; }
@@ -49,6 +50,73 @@ code { background: #f0f4ff; color: #5863a8; padding: 1px 5px; border-radius: 4px
 .payroll-grid .cell-calculated { box-shadow: inset 0 0 0 1px #2f6bd6; }
 .payroll-grid .name-cell { font-weight: 700; color: #0b3a2c; text-decoration: underline; }
 .payroll-grid .table-secondary td { font-weight: 700; }
+
+.btn-compact {
+  padding: 0.2rem 0.5rem;
+  font-size: 0.75rem;
+}
+
+.payroll-grid { width: 100%; table-layout: auto; }
+.payroll-grid.grid-medium td,
+.payroll-grid.grid-medium th { font-size: 0.9rem; }
+.payroll-grid.grid-wide td,
+.payroll-grid.grid-wide th { font-size: 1rem; }
+.payroll-grid.grid-spread { table-layout: fixed; }
+.payroll-grid.grid-spread th,
+.payroll-grid.grid-spread td { width: auto; }
+.actions-cell { min-width: 150px; }
+.actions-stack { display: flex; flex-direction: column; gap: 6px; }
+
+.payroll-grid.view-compact td,
+.payroll-grid.view-compact th { font-size: 0.78rem !important; }
+.payroll-grid.view-large td,
+.payroll-grid.view-large th { font-size: 1.1rem !important; }
+.payroll-grid.view-large { min-width: 1800px; }
+.payroll-table-wrap { max-height: 70vh; overflow: auto !important; position: relative; }
+
+/* Sticky header + first three columns */
+.payroll-grid { --col0: 70px; --col1: 90px; --col2: 220px; }
+.payroll-table-wrap thead th {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: #f8f9fa;
+}
+.payroll-table-wrap .col-0 {
+  position: sticky;
+  left: 0;
+  z-index: 4;
+  background: #ffffff;
+  width: var(--col0);
+  min-width: var(--col0);
+}
+.payroll-table-wrap .col-1 {
+  position: sticky;
+  left: var(--col0);
+  z-index: 4;
+  background: #ffffff;
+  width: var(--col1);
+  min-width: var(--col1);
+}
+.payroll-table-wrap .col-2 {
+  position: sticky;
+  left: calc(var(--col0) + var(--col1));
+  z-index: 4;
+  background: #ffffff;
+  width: var(--col2);
+  min-width: var(--col2);
+}
+.payroll-table-wrap tbody tr.table-secondary .col-0,
+.payroll-table-wrap tbody tr.table-secondary .col-1,
+.payroll-table-wrap tbody tr.table-secondary .col-2 {
+  background: #e9ecef;
+}
+.payroll-table-wrap thead .col-0,
+.payroll-table-wrap thead .col-1,
+.payroll-table-wrap thead .col-2 {
+  z-index: 6;
+  background: #f8f9fa;
+}
 
 /* Floating zoom menu */
 .zoom-menu {

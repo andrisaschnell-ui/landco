@@ -297,6 +297,21 @@ CREATE TABLE IF NOT EXISTS `salary_advances` (
   FOREIGN KEY (`employee_id`) REFERENCES `employees`(`id`)
 ) ENGINE=InnoDB;
 
+-- Payroll settings (salary increase)
+CREATE TABLE IF NOT EXISTS `payroll_settings` (
+  `id`                TINYINT UNSIGNED PRIMARY KEY,
+  `effective_year`    SMALLINT UNSIGNED NOT NULL,
+  `effective_month`   TINYINT UNSIGNED NOT NULL,
+  `increase_pct`      DECIMAL(6,2) NOT NULL DEFAULT 0,
+  `enabled`           TINYINT(1) NOT NULL DEFAULT 0,
+  `updated_at`        TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+INSERT IGNORE INTO `payroll_settings`
+  (`id`, `effective_year`, `effective_month`, `increase_pct`, `enabled`)
+VALUES
+  (1, YEAR(CURDATE()), 1, 0, 0);
+
 CREATE TABLE IF NOT EXISTS `bim_salary_transfers` (
   `id`                  INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   `salary_run_id`       INT UNSIGNED,

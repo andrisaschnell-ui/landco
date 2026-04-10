@@ -2,13 +2,16 @@
 // php/includes/payroll_sheet.php
 
 function payroll_columns(): array {
+    $settings = payroll_get_settings();
+    $base_year = $settings['base_year'];
+    $next_year = $settings['next_year'];
     return [
         ['key' => 'no', 'label' => 'No', 'type' => 'number', 'editable' => false],
         ['key' => 'house', 'label' => 'HOUSE', 'type' => 'text', 'editable' => true],
         ['key' => 'name', 'label' => 'Name', 'type' => 'text', 'editable' => true],
         ['key' => 'role', 'label' => 'Role', 'type' => 'text', 'editable' => true],
-        ['key' => 'salario_base_2024', 'label' => 'Salario Base 2024', 'type' => 'number', 'editable' => true],
-        ['key' => 'salario_base_2025', 'label' => 'Salario Base 2025', 'type' => 'number', 'editable' => true],
+        ['key' => 'salario_base_2024', 'label' => 'Salario Base ' . $base_year, 'type' => 'number', 'editable' => true],
+        ['key' => 'salario_base_2025', 'label' => 'Salario Base ' . $next_year, 'type' => 'number', 'editable' => true],
         ['key' => 'alimentacao', 'label' => 'ALIMENTACAO', 'type' => 'number', 'editable' => true],
         ['key' => 'back_pay', 'label' => 'Pagamentos Retroativos (Back Payment)', 'type' => 'number', 'editable' => true],
         ['key' => 'dias_trabalho', 'label' => 'DIAS DE TRABALHO', 'type' => 'number', 'editable' => true],
@@ -70,6 +73,51 @@ function payroll_parse_number($v): float {
     $clean = preg_replace('/[^0-9,.\-]/', '', $raw);
     $clean = str_replace([' ', ','], ['', '.'], $clean);
     return is_numeric($clean) ? (float)$clean : 0.0;
+}
+
+function payroll_ensure_settings_table(): void {
+    $sql = <<<SQL
+CREATE TABLE IF NOT EXISTS payroll_settings (
+  id TINYINT UNSIGNED PRIMARY KEY,
+  effective_year SMALLINT UNSIGNED NOT NULL,
+  effective_month TINYINT UNSIGNED NOT NULL,
+  increase_pct DECIMAL(6,2) NOT NULL DEFAULT 0,
+  enabled TINYINT(1) NOT NULL DEFAULT 0,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+SQL;
+    DB::run($sql);
+    DB::run(
+        "INSERT IGNORE INTO payroll_settings (id, effective_year, effective_month, increase_pct, enabled)
+         VALUES (1, YEAR(CURDATE()), 1, 0, 0)"
+    );
+}
+
+function payroll_get_settings(): array {
+    payroll_ensure_settings_table();
+    $row = DB::queryOne("SELECT * FROM payroll_settings WHERE id=1");
+    $year = (int)($row['effective_year'] ?? (int)date('Y'));
+    $month = (int)($row['effective_month'] ?? 1);
+    $pct = (float)($row['increase_pct'] ?? 0);
+    $enabled = (int)($row['enabled'] ?? 0);
+    return [
+        'effective_year' => $year,
+        'effective_month' => $month,
+        'increase_pct' => $pct,
+        'enabled' => $enabled === 1,
+        'base_year' => $year - 1,
+        'next_year' => $year,
+    ];
+}
+
+function payroll_save_settings(int $effective_year, int $effective_month, float $pct, bool $enabled): void {
+    payroll_ensure_settings_table();
+    DB::run(
+        "UPDATE payroll_settings
+         SET effective_year=?, effective_month=?, increase_pct=?, enabled=?
+         WHERE id=1",
+        [$effective_year, $effective_month, $pct, $enabled ? 1 : 0]
+    );
 }
 
 function payroll_admin_defaults(): array {
@@ -253,20 +301,38 @@ function payroll_parse_xlsx_admin_rows(string $path): array {
         }
     }
 
-    $header_row = 6;
-    $header_map = $rows[$header_row] ?? [];
+    // Helper to normalize headers to ASCII for robust matching
+    $normalize = function(string $s): string {
+        $str = $s;
+        $str = @iconv('UTF-8','ASCII//TRANSLIT//IGNORE',$str);
+        $str = strtolower(trim((string)$str));
+        $str = preg_replace('/[^a-z0-9]+/',' ', $str);
+        return trim($str);
+    };
+
+    // BDO spreadsheets often have headers split across rows 8 and 9
+    $header_rows = [6, 8, 9];
     $col_by_header = [];
-    foreach ($header_map as $col => $label) {
-        $key = strtolower(trim((string)$label));
-        $col_by_header[$key] = $col;
+    foreach ($header_rows as $hr) {
+        if (isset($rows[$hr])) {
+            foreach ($rows[$hr] as $col => $label) {
+                $norm = $normalize((string)$label);
+                if ($norm !== '') {
+                    $col_by_header[$norm] = $col;
+                }
+            }
+        }
     }
 
     $header_to_key = [
         'house' => 'house',
         'name' => 'name',
+        'nome do trabalhador' => 'name',
         'role' => 'role',
+        'categoria' => 'role',
         'salario base 2024' => 'salario_base_2024',
         'salario base 2025' => 'salario_base_2025',
+        '2025' => 'salario_base_2025',
         'alimentacao' => 'alimentacao',
         'pagamentos retroativos (back payment)' => 'back_pay',
         'dias de trabalho' => 'dias_trabalho',
@@ -283,15 +349,28 @@ function payroll_parse_xlsx_admin_rows(string $path): array {
         'arredondamento' => 'arredondamento',
     ];
 
+    // Build a normalized header -> internal key map
+    $header_to_key_norm = [];
+    foreach ($header_to_key as $k => $v) {
+        $header_to_key_norm[$normalize($k)] = $v;
+    }
+
+    // Hand-map 'house' to Column B if not found by header (common in BDO format)
+    if (!isset($col_by_header['house']) && isset($rows[10]['B'])) {
+        $col_by_header['house'] = 'B';
+    }
+
     $input_rows = [];
-    foreach (payroll_data_rows() as $row_no) {
+    $data_rows_app = payroll_data_rows();
+    // In BDO Excel, data starts at row 10. App rows are 7 to 27.
+    // Offset = 3 (App 7 -> Excel 10)
+    foreach ($data_rows_app as $row_no) {
+        $excel_row_no = $row_no + 3;
         $input_rows[$row_no] = [];
-        foreach ($header_to_key as $header_label => $key) {
-            $col = $col_by_header[$header_label] ?? null;
-            if (!$col) {
-                continue;
-            }
-            $val = $rows[$row_no][$col] ?? '';
+        foreach ($header_to_key_norm as $header_label_norm => $key) {
+            $col = $col_by_header[$header_label_norm] ?? null;
+            if (!$col) { continue; }
+            $val = $rows[$excel_row_no][$col] ?? '';
             if (in_array($key, ['house', 'name', 'role', 'arredondamento'], true)) {
                 $input_rows[$row_no][$key] = trim((string)$val);
             } else {
@@ -309,48 +388,63 @@ function payroll_delete_month(int $month, int $year): void {
 }
 
 function payroll_ensure_table_exists(): void {
-    $sql = <<<SQL
-CREATE TABLE IF NOT EXISTS payroll_sheet_rows (
-  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  month TINYINT UNSIGNED NOT NULL,
-  year SMALLINT UNSIGNED NOT NULL,
-  row_no SMALLINT UNSIGNED NOT NULL,
-  no_val SMALLINT UNSIGNED NULL,
-  house VARCHAR(40) NULL,
-  name VARCHAR(150) NULL,
-  role VARCHAR(80) NULL,
-  salario_base_2024 DECIMAL(14,2) NOT NULL DEFAULT 0,
-  salario_base_2025 DECIMAL(14,2) NOT NULL DEFAULT 0,
-  alimentacao DECIMAL(14,2) NOT NULL DEFAULT 0,
-  back_pay DECIMAL(14,2) NOT NULL DEFAULT 0,
-  dias_trabalho DECIMAL(6,2) NOT NULL DEFAULT 0,
-  salario_mensal DECIMAL(14,2) NOT NULL DEFAULT 0,
-  nightshift_hours DECIMAL(8,2) NOT NULL DEFAULT 0,
-  guardas_25 DECIMAL(14,2) NOT NULL DEFAULT 0,
-  horas_1_5 DECIMAL(8,2) NOT NULL DEFAULT 0,
-  valor_1_5 DECIMAL(14,2) NOT NULL DEFAULT 0,
-  horas_2 DECIMAL(8,2) NOT NULL DEFAULT 0,
-  valor_2 DECIMAL(14,2) NOT NULL DEFAULT 0,
-  premios DECIMAL(14,2) NOT NULL DEFAULT 0,
-  gratificacoes DECIMAL(14,2) NOT NULL DEFAULT 0,
-  dias_ferias DECIMAL(8,2) NOT NULL DEFAULT 0,
-  feria_montante DECIMAL(14,2) NOT NULL DEFAULT 0,
-  total_remuneracao DECIMAL(14,2) NOT NULL DEFAULT 0,
-  salario_adiantado DECIMAL(14,2) NOT NULL DEFAULT 0,
-  irps DECIMAL(14,2) NOT NULL DEFAULT 0,
-  divida DECIMAL(14,2) NOT NULL DEFAULT 0,
-  inss DECIMAL(14,2) NOT NULL DEFAULT 0,
-  sind DECIMAL(14,2) NOT NULL DEFAULT 0,
-  total_deductions DECIMAL(14,2) NOT NULL DEFAULT 0,
-  salario_liquido DECIMAL(14,2) NOT NULL DEFAULT 0,
-  arredondamento VARCHAR(40) NULL,
-  rubrica DECIMAL(14,2) NOT NULL DEFAULT 0,
-  ah DECIMAL(14,2) NOT NULL DEFAULT 0,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  UNIQUE KEY uq_payroll_sheet (month, year, row_no)
-) ENGINE=InnoDB;
-SQL;
-    DB::run($sql);
+    DB::run("CREATE TABLE IF NOT EXISTS payroll_sheet_rows (
+      id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      month TINYINT UNSIGNED NOT NULL,
+      year SMALLINT UNSIGNED NOT NULL,
+      row_no SMALLINT UNSIGNED NOT NULL,
+      no_val SMALLINT UNSIGNED NULL,
+      house VARCHAR(40) NULL,
+      name VARCHAR(150) NULL,
+      role VARCHAR(80) NULL,
+      salario_base_2024 DECIMAL(14,2) NOT NULL DEFAULT 0,
+      salario_base_2025 DECIMAL(14,2) NOT NULL DEFAULT 0,
+      alimentacao DECIMAL(14,2) NOT NULL DEFAULT 0,
+      back_pay DECIMAL(14,2) NOT NULL DEFAULT 0,
+      dias_trabalho DECIMAL(6,2) NOT NULL DEFAULT 0,
+      salario_mensal DECIMAL(14,2) NOT NULL DEFAULT 0,
+      nightshift_hours DECIMAL(8,2) NOT NULL DEFAULT 0,
+      guardas_25 DECIMAL(14,2) NOT NULL DEFAULT 0,
+      horas_1_5 DECIMAL(8,2) NOT NULL DEFAULT 0,
+      valor_1_5 DECIMAL(14,2) NOT NULL DEFAULT 0,
+      horas_2 DECIMAL(8,2) NOT NULL DEFAULT 0,
+      valor_2 DECIMAL(14,2) NOT NULL DEFAULT 0,
+      premios DECIMAL(14,2) NOT NULL DEFAULT 0,
+      gratificacoes DECIMAL(14,2) NOT NULL DEFAULT 0,
+      dias_ferias DECIMAL(8,2) NOT NULL DEFAULT 0,
+      feria_montante DECIMAL(14,2) NOT NULL DEFAULT 0,
+      total_remuneracao DECIMAL(14,2) NOT NULL DEFAULT 0,
+      salario_adiantado DECIMAL(14,2) NOT NULL DEFAULT 0,
+      irps DECIMAL(14,2) NOT NULL DEFAULT 0,
+      divida DECIMAL(14,2) NOT NULL DEFAULT 0,
+      inss DECIMAL(14,2) NOT NULL DEFAULT 0,
+      sind DECIMAL(14,2) NOT NULL DEFAULT 0,
+      total_deductions DECIMAL(14,2) NOT NULL DEFAULT 0,
+      salario_liquido DECIMAL(14,2) NOT NULL DEFAULT 0,
+      arredondamento VARCHAR(40) NULL,
+      rubrica DECIMAL(14,2) NOT NULL DEFAULT 0,
+      ah DECIMAL(14,2) NOT NULL DEFAULT 0,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_payroll_sheet (month, year, row_no)
+    ) ENGINE=InnoDB");
+
+    DB::run("CREATE TABLE IF NOT EXISTS payroll_roles (
+      id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      role_name VARCHAR(80) NOT NULL UNIQUE
+    ) ENGINE=InnoDB");
+
+    // Seed default roles if empty
+    try {
+        $count = (int)(DB::queryOne("SELECT COUNT(*) c FROM payroll_roles")['c'] ?? 0);
+        if ($count === 0) {
+            $defaults = ['Gerente','Ajudante gerente','Empregada','Cosinheiro','Ajudante cosinheiro','Capitao','Agudante capitao','Jardineiro','Guarda'];
+            foreach ($defaults as $r) {
+                DB::run("INSERT IGNORE INTO payroll_roles (role_name) VALUES (?)", [$r]);
+            }
+        }
+    } catch (Exception $e) {
+        // Silently fail if table still missing or query fails
+    }
 }
 
 function payroll_blank_row(int $row_no): array {
@@ -437,6 +531,8 @@ function payroll_load_rows(int $month, int $year): array {
     foreach (payroll_row_numbers() as $row_no) {
         $all_rows[$row_no] = $by_row[$row_no] ?? payroll_blank_row($row_no);
     }
+    $all_rows['__context_month'] = $month;
+    $all_rows['__context_year'] = $year;
     $all_rows = payroll_calculate_rows($all_rows);
     return $all_rows;
 }
@@ -469,6 +565,8 @@ function payroll_save_rows(int $month, int $year, array $input_rows): array {
         }
     }
 
+    $rows['__context_month'] = $month;
+    $rows['__context_year'] = $year;
     $rows = payroll_calculate_rows($rows);
 
     $db = DB::get();
@@ -522,23 +620,69 @@ function payroll_save_rows(int $month, int $year, array $input_rows): array {
     $stmt = $db->prepare($sql);
 
     foreach ($rows as $r) {
+        if (!is_array($r)) continue;
         $stmt->execute([
-            $month, $year, $r['row_no'], $r['no'],
-            $r['house'], $r['name'], $r['role'],
-            $r['salario_base_2024'], $r['salario_base_2025'], $r['alimentacao'], $r['back_pay'], $r['dias_trabalho'],
-            $r['salario_mensal'], $r['nightshift_hours'], $r['guardas_25'], $r['horas_1_5'], $r['valor_1_5'],
-            $r['horas_2'], $r['valor_2'], $r['premios'], $r['gratificacoes'], $r['dias_ferias'], $r['feria_montante'],
-            $r['total_remuneracao'], $r['salario_adiantado'], $r['irps'], $r['divida'], $r['inss'], $r['sind'],
-            $r['total_deductions'], $r['salario_liquido'], $r['arredondamento'], $r['rubrica'], $r['ah'],
+            $month, $year, $r['row_no'], $r['no'] ?? null,
+            $r['house'] ?? '', $r['name'] ?? '', $r['role'] ?? '',
+            $r['salario_base_2024'] ?? 0, $r['salario_base_2025'] ?? 0, $r['alimentacao'] ?? 0,
+            $r['back_pay'] ?? 0, $r['dias_trabalho'] ?? 0, $r['salario_mensal'] ?? 0,
+            $r['nightshift_hours'] ?? 0, $r['guardas_25'] ?? 0, $r['horas_1_5'] ?? 0,
+            $r['valor_1_5'] ?? 0, $r['horas_2'] ?? 0, $r['valor_2'] ?? 0, $r['premios'] ?? 0,
+            $r['gratificacoes'] ?? 0, $r['dias_ferias'] ?? 0, $r['feria_montante'] ?? 0,
+            $r['total_remuneracao'] ?? 0, $r['salario_adiantado'] ?? 0, $r['irps'] ?? 0,
+            $r['divida'] ?? 0, $r['inss'] ?? 0, $r['sind'] ?? 0, $r['total_deductions'] ?? 0,
+            $r['salario_liquido'] ?? 0, $r['arredondamento'] ?? '', $r['rubrica'] ?? 0, $r['ah'] ?? 0,
         ]);
     }
+
     $db->commit();
+
+    // ── Sync Payroll to Expenses ───────────────────────────────
+    // Aggregate by house
+    $by_house = [];
+    foreach ($rows as $r) {
+        if (!is_array($r) || empty(trim((string)$r['name']))) continue;
+        $h = trim((string)$r['house']) ?: 'LC';
+        if (!isset($by_house[$h])) $by_house[$h] = 0.0;
+        $by_house[$h] += (float)$r['total_remuneracao']; // Using gross cost
+    }
+
+    // Prepare properties map
+    $props = DB::query("SELECT id, house_code FROM properties");
+    $prop_map = [];
+    foreach ($props as $p) $prop_map[$p['house_code']] = (int)$p['id'];
+
+    // Categories
+    $cat_sal = (int)(DB::queryOne("SELECT id FROM expense_categories WHERE name='Salaries & Wages'")['id'] ?? 0);
+    $cat_grd = (int)(DB::queryOne("SELECT id FROM expense_categories WHERE name='Garden workers'")['id'] ?? 0);
+
+    // Delete existing payroll expenses for this month to avoid duplicates
+    DB::run("DELETE FROM expense_transactions WHERE month=? AND year=? AND description LIKE 'Payroll - %'", [$month, $year]);
+
+    foreach ($by_house as $h => $total) {
+        if ($total <= 0) continue;
+        $pid = $prop_map[$h] ?? null;
+        $is_sh = ($h === 'LC');
+        $cid = $is_sh ? $cat_grd : $cat_sal;
+        $desc = "Payroll - $h";
+        
+        DB::run(
+            "INSERT INTO expense_transactions (property_id, category_id, month, year, description, amount_mzn, is_shared, source_file)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [$pid, $cid, $month, $year, $desc, $total, $is_sh ? 1 : 0, 'Auto-generated from Payroll']
+        );
+    }
 
     return $rows;
 }
 
 function payroll_calculate_rows(array $rows): array {
     $data_rows = payroll_data_rows();
+    $settings = payroll_get_settings();
+    $apply = $settings['enabled'];
+    $eff_year = $settings['effective_year'];
+    $eff_month = $settings['effective_month'];
+    $pct = $settings['increase_pct'];
 
     foreach ($data_rows as $row_no) {
         $r = $rows[$row_no] ?? payroll_blank_row($row_no);
@@ -548,6 +692,16 @@ function payroll_calculate_rows(array $rows): array {
 
         $salario_base_2024 = payroll_parse_number($r['salario_base_2024']);
         $salario_base_2025 = payroll_parse_number($r['salario_base_2025']);
+        // Apply increase only when settings active for current period
+        if ($apply) {
+            $current_year = $rows['__context_year'] ?? null;
+            $current_month = $rows['__context_month'] ?? null;
+            if ($current_year !== null && $current_month !== null) {
+                if ($current_year > $eff_year || ($current_year == $eff_year && $current_month >= $eff_month)) {
+                    $salario_base_2025 = round($salario_base_2024 * (1 + ($pct / 100)), 2);
+                }
+            }
+        }
         $alimentacao = payroll_parse_number($r['alimentacao']);
         $back_pay = payroll_parse_number($r['back_pay']);
         $dias_trabalho = payroll_parse_number($r['dias_trabalho']);
@@ -601,10 +755,10 @@ function payroll_calculate_rows(array $rows): array {
             $rows[28][$k] += payroll_parse_number($rows[$row_no][$k] ?? 0);
         }
     }
-    $rows[28]['salario_base_2024'] = '';
-    $rows[28]['salario_base_2025'] = '';
-    $rows[28]['dias_trabalho'] = '';
-    $rows[28]['salario_mensal'] = '';
+    $rows[28]['salario_base_2024'] = 0;
+    $rows[28]['salario_base_2025'] = 0;
+    $rows[28]['dias_trabalho'] = 0;
+    $rows[28]['salario_mensal'] = 0;
 
     // Rubrica summary logic
     $rows[7]['rubrica']  = sum_range($rows, 7, 14, 'total_remuneracao');
@@ -701,4 +855,34 @@ function payroll_add_row(int $month, int $year): array {
     }
     $rows[$target_row]['no'] = $max_no + 1;
     return payroll_save_rows($month, $year, $rows);
+}
+
+function payroll_template_rows(int $month, int $year): array {
+    $rows = [];
+    foreach (payroll_row_numbers() as $row_no) {
+        $rows[$row_no] = payroll_blank_row($row_no);
+    }
+    $idx = 1;
+    foreach (payroll_data_rows() as $row_no) {
+        $rows[$row_no]['no'] = $idx++;
+        $rows[$row_no]['house'] = 'H' . $rows[$row_no]['no'];
+        $rows[$row_no]['name'] = 'EMPLOYEE ' . $rows[$row_no]['no'];
+        $rows[$row_no]['role'] = 'ROLE';
+        $rows[$row_no]['salario_base_2024'] = 10000;
+        $rows[$row_no]['salario_base_2025'] = 11000;
+        $rows[$row_no]['alimentacao'] = 500;
+        $rows[$row_no]['back_pay'] = 0;
+        $rows[$row_no]['dias_trabalho'] = 30;
+        $rows[$row_no]['nightshift_hours'] = 8;
+        $rows[$row_no]['horas_1_5'] = 4;
+        $rows[$row_no]['horas_2'] = 2;
+        $rows[$row_no]['premios'] = 300;
+        $rows[$row_no]['gratificacoes'] = 100;
+        $rows[$row_no]['dias_ferias'] = 2;
+        $rows[$row_no]['salario_adiantado'] = 200;
+        $rows[$row_no]['irps'] = 150;
+        $rows[$row_no]['divida'] = 0;
+        $rows[$row_no]['arredondamento'] = '0000000000';
+    }
+    return payroll_calculate_rows($rows);
 }
